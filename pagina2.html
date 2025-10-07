@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body {
@@ -19,7 +20,6 @@
             padding: 1rem;
         }
 
-        /* Modal specific styles */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -40,9 +40,15 @@
 
     <div id="startContainer" class="text-center">
         <h1 class="text-3xl font-bold text-gray-100 mb-4">¡Bienvenido!</h1>
-        <p class="text-gray-200 mb-6">Haz clic para comenzar el temporizador de 2 horas.</p>
-        <button id="startBtn" class="px-8 py-3 rounded-full bg-green-500 text-white font-semibold shadow-lg hover:bg-green-700 transition-colors">
-            Iniciar Temporizador
+        <p class="text-gray-200 mb-6">Escanea el código QR del equipo para comenzar.</p>
+        
+        <div class="mb-4">
+            <label for="qrCodeInput" class="block text-sm font-medium text-gray-200 mb-1">CÓDIGO QR (Simulado)</label>
+            <input type="text" id="qrCodeInput" value="PC-LAB-001" required 
+                   class="w-full px-4 py-2 border text-white border-gray-900 bg-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 transition-colors text-center">
+        </div>
+        <button id="startBtn" class="px-6 py-3 rounded-full bg-green-500 text-white font-semibold shadow-lg hover:bg-green-700 transition-colors">
+            Registrar Dispositivo e Iniciar
         </button>
     </div>
 
@@ -52,25 +58,24 @@
             <p class="text-white">Tiempo Restante</p>
         </div>
     
-        <div class="bg-gray-600 p-8 rounded-xl h-64 w-full mb-6">
-            <p id="studentDataText" class="text-white">
-                Cargando datos del estudiante...
-            </p>
+        <div class="bg-gray-600 p-8 rounded-xl h-auto w-full mb-6">
+            <p id="studentDataText" class="text-white">Cargando datos del estudiante...</p>
+            <p id="deviceDataText" class="text-white mt-4 text-sm"></p>
         </div>
         
-        <div id="successMessage" class="hidden mt-6 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded-lg" role="alert">
-            <p class="font-bold">Success!</p>
-            <p class="text-sm">Your code has been submitted.</p>
+        <div id="statusMessage" class="mt-6 bg-yellow-700 border border-yellow-600 text-white px-4 py-3 rounded-lg" role="alert">
+            <p id="statusTitle" class="font-bold">Estado:</p>
+            <p id="statusDetails" class="text-sm">Esperando registro...</p>
         </div>
     
         <div class="flex justify-center space-x-4 mt-6">
-            <button id="renovarBtn" class="px-8 py-3 rounded-full bg-blue-400 text-white font-semibold shadow-lg hover:bg-blue-600 transition-colors">
+            <button id="renovarBtn" class="px-6 py-3 rounded-full bg-blue-400 text-white font-semibold shadow-lg hover:bg-blue-600 transition-colors">
                 Renovar
             </button>
-            <button id="reporteBtn" class="px-8 py-3 rounded-full bg-orange-400 text-white font-semibold shadow-lg hover:bg-orange-600 transition-colors">
+            <button id="reporteBtn" class="px-6 py-3 rounded-full bg-orange-400 text-white font-semibold shadow-lg hover:bg-orange-600 transition-colors">
                 Reporte
             </button>
-            <button id="salirBtn" class="px-8 py-3 rounded-full bg-red-400 text-white font-semibold shadow-lg hover:bg-red-600 transition-colors">
+            <button id="salirBtn" class="px-6 py-3 rounded-full bg-red-400 text-white font-semibold shadow-lg hover:bg-red-600 transition-colors">
                 Salir
             </button>
         </div>
@@ -97,24 +102,119 @@
 </div>
 
 <script>
+    // --- SUPABASE LOCAL CONFIG & INITIALIZATION ---
+    // NOTE: Replace with your actual Supabase URL and Key
+    const SUPABASE_URL = 'http://192.168.1.110:54321'; 
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
+    
+    var supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // --- GLOBALS AND DOM ELEMENTS ---
     const maxduration = 8 * 60 * 60 * 1000;
     const renewalDuration = 2 * 60 * 60 * 1000;
     let endTime;
     let timerInterval;
+    let activeSubscription; // Stores the Realtime subscription
+    let currentStudentCode; // The logged-in student's code (e.g., "220791055")
+    let currentSessionId;   // The ID of the ACTIVE SESSION record in the 'users' table
+    let currentEquipoId;    // The ID of the team/device in the 'equipos' table
 
     const startBtn = document.getElementById('startBtn');
+    const qrCodeInput = document.getElementById('qrCodeInput');
     const startContainer = document.getElementById('startContainer');
     const mainContent = document.getElementById('mainContent');
     const studentDataText = document.getElementById('studentDataText');
+    const deviceDataText = document.getElementById('deviceDataText');
+    const statusMessage = document.getElementById('statusMessage');
+    const statusTitle = document.getElementById('statusTitle');
+    const statusDetails = document.getElementById('statusDetails');
+    const clockDisplay = document.getElementById('clock');
 
-    function startTimer() {
-        const storedEndTime = localStorage.getItem('timerEndTime');
-        if (storedEndTime) {
-            endTime = new Date(parseInt(storedEndTime, 10));
+
+    // --- UTILITY & SESSION FUNCTIONS ---
+
+    function getDeviceInfo() {
+        return {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform || 'N/A'
+        };
+    }
+
+    function updateStatus(title, message, isSuccess = false) {
+        statusTitle.textContent = title;
+        statusDetails.textContent = message;
+        statusMessage.className = 'mt-6 px-4 py-3 rounded-lg text-white';
+        
+        if (isSuccess) {
+            statusMessage.classList.add('bg-green-700', 'border', 'border-green-600');
+        } else if (title.includes('Error') || title.includes('Denegado') || title.includes('Cerrada') || title.includes('Expirada') || title.includes('Ocupado')) {
+            statusMessage.classList.add('bg-red-700', 'border', 'border-red-600');
         } else {
-            endTime = new Date().getTime() + renewalDuration;
-            localStorage.setItem('timerEndTime', endTime);
+            statusMessage.classList.add('bg-yellow-700', 'border', 'border-yellow-600');
         }
+    }
+
+    /**
+     * Cleans up client state (local storage, timer, subscription) and redirects.
+     */
+    function logoutClient() {
+        clearInterval(timerInterval);
+        if (activeSubscription) {
+            supabase.removeChannel(activeSubscription);
+            activeSubscription = null;
+        }
+        localStorage.removeItem('studentData');
+        localStorage.removeItem('timerEndTime');
+        
+        mainContent.classList.add('hidden');
+        document.getElementById('SignOutMessage').classList.remove('hidden');
+        
+        clockDisplay.textContent = '00:00:00';
+
+        setTimeout(() => { window.location.href = 'index.html'; }, 3000);
+    }
+    
+    /**
+     * Closes the session on the server (updates 'users' and 'equipos' tables).
+     */
+    async function logoutServer() {
+        if (currentSessionId) {
+            // 1. Update the specific SESSION record to active=false
+            await supabase
+                .from('users')
+                .update({ active: false, finalTime: new Date().toISOString() }) 
+                .eq('id', currentSessionId) 
+                .then(() => console.log(`DB status set to inactive for session ID: ${currentSessionId}.`))
+                .catch(e => console.error('Error updating DB status:', e));
+        }
+
+        if (currentEquipoId) {
+            // 2. Mark the team/device as NOT ACTIVE/AVAILABLE in the 'equipos' table
+            await supabase
+                .from('equipos')
+                .update({ active: false }) 
+                .eq('id', currentEquipoId) 
+                .then(() => console.log(`Equipo ID ${currentEquipoId} set to inactive.`))
+                .catch(e => console.error('Error updating equipo status:', e));
+        }
+
+        updateStatus('Sesión Cerrada', 'Su sesión ha sido finalizada. El dispositivo está libre.', false);
+        logoutClient();
+    }
+
+
+    // --- TIMER LOGIC ---
+    function startTimer(finalTimeDB) {
+        clearInterval(timerInterval); 
+
+        if (finalTimeDB) {
+            endTime = new Date(finalTimeDB);
+        } else {
+            const storedEndTime = localStorage.getItem('timerEndTime');
+            endTime = storedEndTime ? new Date(parseInt(storedEndTime, 10)) : new Date().getTime() + renewalDuration;
+        }
+
+        localStorage.setItem('timerEndTime', endTime.getTime());
         
         startContainer.classList.add('hidden');
         mainContent.classList.remove('hidden');
@@ -129,8 +229,8 @@
 
         if (timeLeft <= 0) {
             clearInterval(timerInterval);
-            document.getElementById('clock').textContent = "00:00:00";
-            localStorage.removeItem('timerEndTime');
+            clockDisplay.textContent = "00:00:00";
+            logoutServer(); 
             return;
         }
 
@@ -142,41 +242,241 @@
         const displayMinutes = String(minutes).padStart(2, '0');
         const displaySeconds = String(seconds).padStart(2, '0');
 
-        document.getElementById('clock').textContent = `${displayHours}:${displayMinutes}:${displaySeconds}`;
-    }
-
-    // Cargar datos del estudiante y mostrarlos al cargar la página
-    function loadStudentData() {
-        const studentDataString = localStorage.getItem('studentData');
-        if (studentDataString) {
-            const studentData = JSON.parse(studentDataString);
-            const formattedData = `
-                <span class="font-bold text-lg block mb-2">Información del Estudiante:</span>
-                <p><strong>Nombre:</strong> ${studentData.nombre}</p>
-                <p><strong>Código:</strong> ${studentData.codigo}</p>
-                <p><strong>Carrera:</strong> ${studentData.carrera}</p>
-                <p><strong>Campus:</strong> ${studentData.campus}</p>
-                <p><strong>Ciclo:</strong> ${studentData.ciclo}</p>
-                <p><strong>Situación:</strong> ${studentData.situacion}</p>
-            `;
-            studentDataText.innerHTML = formattedData;
-        } else {
-            studentDataText.textContent = 'No se encontraron datos de estudiante.';
-        }
-    }
-
-    const storedEndTimeOnLoad = localStorage.getItem('timerEndTime');
-    if (storedEndTimeOnLoad) {
-        startTimer();
-    } else {
-        // Cargar los datos del estudiante solo si no hay un temporizador activo
-        loadStudentData();
+        clockDisplay.textContent = `${displayHours}:${displayMinutes}:${displaySeconds}`;
     }
     
-    startBtn.addEventListener('click', () => {
-        startTimer();
+    // --- REALTIME SUBSCRIPTION ---
+
+    /**
+     * Sets up the Realtime subscription for the current session ID.
+     */
+    function setupRealtimeSubscription() {
+        if (!currentSessionId) return; 
+        
+        if (activeSubscription) {
+             supabase.removeChannel(activeSubscription);
+        }
+        
+        activeSubscription = supabase
+            .channel(`session_${currentSessionId}`)
+            .on('postgres_changes', { 
+                event: 'UPDATE', 
+                schema: 'public', 
+                table: 'users',
+                filter: `id=eq.${currentSessionId}` 
+            }, (payload) => {
+                console.log('Realtime Update Received:', payload);
+                const newStatus = payload.new;
+                
+                // 1. Forced remote logout
+                if (newStatus.active === false) {
+                    updateStatus('Sesión Cerrada Remotamente', 'Su sesión ha sido finalizada por el servidor.', false);
+                    logoutClient();
+                }
+                
+                // 2. Timer renewal/update from server
+                if (newStatus.finalTime && newStatus.active === true) {
+                    const newFinalTime = new Date(newStatus.finalTime);
+                    if (newFinalTime.getTime() !== endTime.getTime()) {
+                        startTimer(newFinalTime);
+                        updateStatus('Tiempo Actualizado', 'El tiempo de sesión ha sido sincronizado con el servidor.', true);
+                    }
+                }
+            })
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('Realtime subscription successful.');
+                }
+            });
+    }
+
+    // --- INITIALIZATION LOGIC (Checking for Active Session) ---
+
+    /**
+     * Checks if the student has a resumable active session from a previous visit.
+     */
+    async function checkStudentSession() {
+        const studentDataString = localStorage.getItem('studentData');
+        const deviceInfo = getDeviceInfo();
+
+        // If no student data, redirect back to login page
+        if (!studentDataString) {
+            window.location.href = 'index.html';
+            return;
+        }
+
+        const studentData = JSON.parse(studentDataString);
+        currentStudentCode = studentData.codigo; 
+
+        // Display basic data
+        studentDataText.innerHTML = `
+            <span class="font-bold text-lg block mb-2">Información del Estudiante:</span>
+            <p><strong>Código:</strong> ${studentData.codigo}</p>
+            <p><strong>Nombre:</strong> ${studentData.nombre}</p>
+            <p><strong>Carrera:</strong> ${studentData.carrera}</p>
+        `;
+        deviceDataText.textContent = `Dispositivo: ${deviceInfo.platform} | User Agent: ${deviceInfo.userAgent.substring(0, 50)}...`;
+
+        // Check for the student's *most recent* active session (to resume it)
+        const { data: activeSessionArray, error } = await supabase
+            .from('users')
+            .select('id, active, finalTime, id_equipo, equipos(id, name, active)') 
+            .eq('code', currentStudentCode)
+            .eq('active', true) 
+            .order('created_at', { ascending: false }) 
+            .limit(1); 
+
+        if (error) {
+            updateStatus('Error de BD', error.message, false);
+            return;
+        }
+
+        const activeSessionData = activeSessionArray && activeSessionArray.length > 0 ? activeSessionArray[0] : null;
+        
+        if (activeSessionData) {
+            currentSessionId = activeSessionData.id;
+            currentEquipoId = activeSessionData.id_equipo;
+            const equipoName = activeSessionData.equipos.name;
+
+            // 1. Check if the session expired locally
+            if (activeSessionData.finalTime && new Date(activeSessionData.finalTime).getTime() <= new Date().getTime()) {
+                 updateStatus('Sesión Expirada', `La sesión en ${equipoName} ha expirado. Inicia una nueva.`, false);
+                 // Cleanup DB for this expired session
+                 await supabase.from('users').update({ active: false, finalTime: new Date().toISOString() }).eq('id', currentSessionId);
+                 await supabase.from('equipos').update({ active: false }).eq('id', currentEquipoId); // Mark team as inactive
+                 currentSessionId = null; 
+            } 
+            // 2. Resume the valid session
+            else {
+                // Self-correct the equipo status if it's somehow false while the session is active
+                if (activeSessionData.equipos.active === false) {
+                     await supabase.from('equipos').update({ active: true }).eq('id', currentEquipoId);
+                     console.log(`Corrected equipo ${currentEquipoId} status to active.`);
+                }
+
+                startTimer(activeSessionData.finalTime); 
+                setupRealtimeSubscription();
+
+                updateStatus('Conectado', `Sesión activa en equipo: ${equipoName}. Tiempo cargado.`, true);
+                startContainer.classList.add('hidden');
+                mainContent.classList.remove('hidden');
+                deviceDataText.textContent = `Dispositivo: ${equipoName} | Plataforma: ${deviceInfo.platform} | User Agent: ${deviceInfo.userAgent.substring(0, 50)}...`;
+                return;
+            }
+        } 
+
+        currentSessionId = null; 
+        updateStatus('Esperando Registro', 'Presiona el botón para registrar y comenzar el temporizador.', false);
+        mainContent.classList.add('hidden');
+        startContainer.classList.remove('hidden');
+    }
+
+
+    // --- SUPABASE REGISTRATION FUNCTION (Checks Equipo.active only) ---
+    async function registerDevice(alumniCode, qrCode, deviceInfo) {
+        const studentData = JSON.parse(localStorage.getItem('studentData'));
+        if (!studentData) throw new Error("Datos de estudiante no disponibles.");
+        
+        // 1. Get the team ID and its current 'active' status.
+        let { data: equipoData, error: equipoError } = await supabase
+            .from('equipos')
+            .select('id, active')
+            .eq('name', qrCode)
+            .maybeSingle();
+
+        if (equipoError) throw new Error(`Error al buscar equipo: ${equipoError.message}`);
+        
+        if (!equipoData) {
+            // Team doesn't exist, create it and mark it as active
+            const { data: newEquipoData, error: newEquipoError } = await supabase
+                .from('equipos')
+                .insert([{ name: qrCode, sistema: deviceInfo.userAgent, active: true }])
+                .select('id')
+                .single();
+            if (newEquipoError) throw new Error(`Error al registrar nuevo equipo: ${newEquipoError.message}`);
+            currentEquipoId = newEquipoData.id;
+        } else {
+            currentEquipoId = equipoData.id;
+            
+            // 2. Check occupancy based ONLY on equipos.active status
+            if (equipoData.active === true) {
+                // If the machine is active, we prevent login.
+                throw new Error(`El equipo ${qrCode} se encuentra actualmente OCUPADO y no está disponible para su uso.`);
+            }
+            
+            // 3. Mark the team as ACTIVE for the new session
+            await supabase
+                .from('equipos')
+                .update({ active: true })
+                .eq('id', currentEquipoId);
+        }
+        
+        // 4. Create the new SESSION record in the 'users' table
+        const finalTimeISO = new Date(endTime).toISOString();
+        const { data: newSessionData, error: newSessionError } = await supabase
+            .from('users')
+            .insert([{ 
+                code: studentData.codigo, 
+                name: studentData.nombre, 
+                career: studentData.carrera, 
+                id_equipo: currentEquipoId, 
+                active: true, 
+                "finalTime": finalTimeISO
+            }])
+            .select('id')
+            .single();
+
+        if (newSessionError) throw new Error(`Error al crear el nuevo registro de sesión: ${newSessionError.message}`);
+        
+        currentSessionId = newSessionData.id; 
+
+        return { sessionId: currentSessionId, equipoId: currentEquipoId };
+    }
+
+
+    // --- INITIALIZATION AND EVENT LISTENERS ---
+    
+    checkStudentSession(); 
+    
+    startBtn.addEventListener('click', async () => {
+        if (!currentStudentCode) return;
+
+        const alumniCode = currentStudentCode;
+        const qrCode = qrCodeInput.value.trim();
+        const deviceInfo = getDeviceInfo();
+
+        if (!qrCode) {
+            alert('Por favor, ingresa el código QR del equipo.');
+            return;
+        }
+        
+        endTime = new Date().getTime() + renewalDuration;
+
+        startBtn.disabled = true;
+        startBtn.textContent = 'Registrando...';
+        updateStatus('Registrando...', 'Intentando conexión y registro en Supabase...', false);
+
+        try {
+            await registerDevice(alumniCode, qrCode, deviceInfo);
+            
+            startTimer(endTime); 
+            setupRealtimeSubscription(); 
+
+            deviceDataText.textContent = `Dispositivo: ${qrCode} | Plataforma: ${deviceInfo.platform} | User Agent: ${deviceInfo.userAgent.substring(0, 50)}...`;
+            
+            updateStatus('Registro Exitoso', `Dispositivo registrado (Equipo: ${qrCode}) y temporizador iniciado.`, true);
+
+        } catch (error) {
+            console.error('Error de registro:', error);
+            updateStatus('Error de Registro/Equipo Ocupado', error.message, false);
+
+        } finally {
+            startBtn.disabled = false;
+            startBtn.textContent = 'Registrar Dispositivo e Iniciar';
+        }
     });
 
+    // --- OTHER BUTTONS (RENOVATE, REPORT, EXIT) ---
     const renovarBtn = document.getElementById('renovarBtn');
     const reporteBtn = document.getElementById('reporteBtn');
     const salirBtn = document.getElementById('salirBtn');
@@ -186,12 +486,31 @@
     const sendReportBtn = document.getElementById('sendReportBtn');
 
     renovarBtn.addEventListener('click', () => {
+        if (mainContent.classList.contains('hidden') || !currentSessionId) {
+            alert('Debes iniciar el registro primero.');
+            return;
+        }
+
         const now = new Date().getTime();
+        if (endTime < now) { 
+             updateStatus('Error', 'El tiempo ha expirado. Por favor, reinicie la sesión.', false);
+             return;
+        }
+        
         const newEndTime = Math.min(now + renewalDuration + (endTime - now), now + maxduration);
         endTime = new Date(newEndTime);
-        localStorage.setItem('timerEndTime', endTime.getTime());
-        updateTimer();
-        alert('Se han añadido 2 horas al tiempo restante.');
+        
+        startTimer(endTime); 
+        updateStatus('Renovación Exitosa', 'Se han añadido 2 horas. Tiempo máximo: 8h. Sincronizando...', true);
+
+        // Update finalTime in DB using the ACTIVE SESSION ID
+        supabase.from('users')
+            .update({"finalTime": endTime.toISOString()})
+            .eq('id', currentSessionId)
+            .then(() => {
+                console.log('DB time updated for session ID:', currentSessionId);
+            })
+            .catch(e => console.error('Error updating DB time:', e));
     });
 
     reporteBtn.addEventListener('click', () => {
@@ -203,25 +522,45 @@
         reportTextarea.value = '';
     });
 
-    sendReportBtn.addEventListener('click', () => {
+    sendReportBtn.addEventListener('click', async () => {
         const report = reportTextarea.value.trim();
-        if (report) {
-            alert('Tu reporte ha sido enviado. Gracias.');
-            console.log('Reporte enviado:', report);
+        if (!report) {
+            alert('No se ingresó ningún reporte. Por favor, intenta de nuevo.');
+            return;
+        }
+
+        if (!currentSessionId || !currentEquipoId) {
+            updateStatus('Error de Reporte', 'No se encontró la sesión activa. Por favor, inicie sesión.', false);
+            return;
+        }
+        
+        try {
+            const { error } = await supabase
+                .from('reportes')
+                .insert([
+                    {
+                        description: `Reporte de Usuario: ${report}`,
+                        id_user: currentSessionId, 
+                        id_equipo: currentEquipoId, 
+                    }
+                ]);
+
+            if (error) throw new Error(error.message);
+
+            updateStatus('Reporte Enviado', 'Tu reporte ha sido enviado. Gracias.', true);
             reportTextarea.value = '';
             reportModal.classList.add('hidden');
-        } else {
-            alert('No se ingresó ningún reporte. Por favor, intenta de nuevo.');
+
+        } catch (error) {
+            updateStatus('Error de Reporte', error.message, false);
+            console.error('Error de reporte:', error);
         }
     });
 
-    salirBtn.addEventListener('click', () => {
-        const confirmation = confirm('¿Estás seguro de que quieres salir? El temporizador se reiniciará.');
+    salirBtn.addEventListener('click', async () => {
+        const confirmation = confirm('¿Estás seguro de que quieres salir? Esto liberará el dispositivo.');
         if (confirmation) {
-            // Eliminar datos del estudiante y el temporizador del almacenamiento local
-            localStorage.removeItem('studentData');
-            localStorage.removeItem('timerEndTime');
-            window.location.href = 'index.html';
+            logoutServer(); 
         }
     });
 </script>
