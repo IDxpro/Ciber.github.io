@@ -34,7 +34,7 @@
         <div>
             <label for="code" class="block text-sm font-medium text-gray-200 mb-1">Codigo</label>
             <input type="text" id="code" name="code" required minlength="9" maxlength="9" 
-                   class="w-full px-4 py-2 border text-white border-gray-900 bg-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                    class="w-full px-4 py-2 border text-white border-gray-900 bg-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 transition-colors">
         </div>
       
         <div>
@@ -55,10 +55,11 @@
     document.getElementById('contactForm').addEventListener('submit', function(event) {
         event.preventDefault();
 
-        const form = event.target;
         const codigo = document.getElementById('code').value;
 
-        const url = 'http://localhost:3000/api/estudiante/datos';
+        // 👇 FIX: Use the Mac Mini's IP address instead of localhost
+        const url = 'http://192.168.1.148:3000/api/estudiante/datos'; 
+        
         const responseContainer = document.getElementById('apiResponse');
         const responseTitle = document.getElementById('responseTitle');
         const responseData = document.getElementById('responseData');
@@ -74,23 +75,16 @@
         responseTitle.textContent = 'Procesando...';
         responseData.textContent = '';
         responseContainer.classList.remove('hidden');
+        responseContainer.className = 'mt-6 bg-gray-700 border border-gray-600 text-white px-4 py-3 rounded-lg'; // Reset style
 
         fetch(url, requestOptions)
-         .then(async response => {
-             if (!response.ok) {
-                 const errorData = await response.json().catch(() => null);
-                 switch (response.status) {
-                     case 400:
-                         throw new Error(`Código ${response.status}: Solicitud malformada. ${errorData ? errorData.error : ''}`);
-                     case 401:
-                         throw new Error(`Código ${response.status}: No autorizado. ${errorData ? errorData.error : ''}`);
-                     case 404:
-                         throw new Error(`Código ${response.status}: No encontrado. ${errorData ? errorData.message : ''}`);
-                     default:
-                         throw new Error(`Error en la red: Código ${response.status}`);
-                 }
-             }
-             return response.json();
+           .then(async response => {
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => null);
+                    responseContainer.className = 'mt-6 bg-red-700 border border-red-600 text-white px-4 py-3 rounded-lg';
+                    throw new Error(`Error ${response.status}: ${errorData ? (errorData.error || errorData.message || 'Error desconocido') : 'Error de conexión'}`);
+                }
+                return response.json();
             })
             .then(data => {
                 // Verificar si la situación es "AC" antes de proceder
@@ -99,16 +93,19 @@
                     localStorage.setItem('studentData', JSON.stringify(data));
                     
                     // Redirigir a la siguiente página
-                    window.location.href = 'pagina2.html';
+                    window.locat
+                    ion.href = 'pagina2.html';
                 } else {
                     // Mostrar error si la situación no es "AC"
-                    responseTitle.textContent = '❌ Error';
-                    responseData.textContent = 'Tu situación académica no es "AC". No puedes continuar.';
+                    responseContainer.className = 'mt-6 bg-red-700 border border-red-600 text-white px-4 py-3 rounded-lg';
+                    responseTitle.textContent = '❌ Acceso Denegado';
+                    responseData.textContent = 'Tu situación académica es inactiva.';
                 }
             })
             .catch(error => {
-                responseTitle.textContent = '❌ Error';
-                responseData.textContent = error.message;
+                responseTitle.textContent = '❌ Error de Conexión o Proxy';
+                // Provide a clearer message to the user that it might be a network/firewall issue
+                responseData.textContent = `No se pudo conectar al servidor: ${error.message}. Verifica que el servidor (192.168.1.148:3000) esté corriendo y que el firewall de tu Mac esté desactivado o permita el tráfico en el puerto 3000.`;
                 console.error('Hubo un problema con la solicitud:', error);
             });
     });
